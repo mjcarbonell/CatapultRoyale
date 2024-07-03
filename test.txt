@@ -1,0 +1,144 @@
+using { /Fortnite.com/Characters }
+using { /Fortnite.com/Devices }
+using { /Fortnite.com/Game }
+using { /UnrealEngine.com/Temporary/Diagnostics }
+using { /Verse.org/Random }
+using { /Verse.org/Simulation }
+
+tiltnboom_log_channel := class(log_channel){}
+
+tiltnboom := class(creative_device):
+    Logger:log = log{Channel := tiltnboom_log_channel}
+    @editable ActivateGameTrigger:trigger_device = trigger_device{} # this is success trigger now. when we have an adequate number of players
+    @editable EndGameTrigger:trigger_device = trigger_device{}
+    @editable GameTimer:timer_device = timer_device{}
+
+    @editable PlayerCounter:player_counter_device  = player_counter_device {}
+
+    @editable CannonballSequences:[]cinematic_sequence_device = array{}
+    @editable DamageVolumes:[]damage_volume_device = array{}
+    @editable PlayerSpawners:[]player_spawner_device = array{}
+    @editable HUBSpawners:[]player_spawner_device = array{}
+    @editable ItemSpawners:[]item_spawner_device = array{}
+    @editable CaptureArea:capture_area_device = capture_area_device{}
+    @editable ScoreManager:score_manager_device = score_manager_device{}
+    @editable HUBTeleporter:teleporter_device = teleporter_device{}
+    @editable GameTeleporter:teleporter_device = teleporter_device{}
+    @editable MinimumItemSpawnTime:float = 5.0
+    @editable MaximumItemSpawnTime:float = 10.0
+    @editable PlayerReference:player_reference_device = player_reference_device{}
+    @editable DelayAfterGame:float = 5.0
+    DelayBetweenCannonballSequences:float = 10.0
+    var GameActive:logic = false # gameActive is defined to be false intitally
+    OnBegin<override>()<suspends>:void=
+        ActivateGameTrigger.TriggeredEvent.Subscribe(OnTriggered) # binding the event gameTrigger event to the onTriggered Function!
+        if (GameActive = false): # When the activateGameTrigger is triggered we check if the game is active. 
+            TeleportPlayersToHUB()
+    OnTriggered(InitiatingAgent:?agent):void=
+        Print("OnTriggered") 
+        if (GameActive = true): # When the activateGameTrigger is triggered we check if the game is active. 
+            Print("game is active. Do nothing.")
+            return
+        else:
+            Print("Game is not active. Start Game")
+            set GameActive = true # set the gameActive variable to be true now.
+            spawn{StartGame()} # if game is not active, we spawn a startGame() function. 
+    StartGame()<suspends>:void=
+        Print("StartGame()") 
+        TeleportPlayersToGame()
+        for (PlayerSpawner : PlayerSpawners):
+            PlayerSpawner.Enable()
+        CaptureArea.Enable() # we enabled the capture area for players to gain points while being in it. 
+        for (DamageVolume : DamageVolumes): # enable all damage volumes 
+            DamageVolume.Enable()
+        for: # For each player, if that player has a score greater than 0, reset their score by awarding the player the inverse of their score to set their score to 0.
+            Player : GetPlayspace().GetPlayers()
+            PlayerScore := ScoreManager.GetCurrentScore(Player)
+            PlayerScore > 0
+        do:
+            ScoreManager.SetScoreAward(-PlayerScore)
+            ScoreManager.Activate(Player)
+        GameTimer.Start()
+        # Race between the timer finishing, the cannonball sequence running, and random items spawning.
+        # The cannonball sequence and spawning random items are infinite loops, but will be canceled as soon as the timer ends.
+        race:
+            GameTimer.SuccessEvent.Await()
+            StartCannonSequence()
+            SpawnRandomItems()
+        OnGameFinished()
+    StartCannonSequence()<suspends>:void=
+        loop:    
+            RandomCannonballSequence:int = GetRandomInt(0, CannonballSequences.Length - 1) # get random index between 0 and length of canonBall Sequences
+            if (CannonballSequence := CannonballSequences[RandomCannonballSequence]):
+                Logger.Print("Set CannonballSequence to {RandomCannonballSequence}")
+                CannonballSequence.Play()
+                Sleep(DelayBetweenCannonballSequences) # Waits 8 seconds 
+    SpawnRandomItems()<suspends>:void=
+        ItemSpawnerCount:int = ItemSpawners.Length - 1
+        loop:
+            NumberOfItemsToSpawn:int = GetRandomInt(0, ItemSpawnerCount)
+            for:
+                CurrentItemSpawnNumber := 0..NumberOfItemsToSpawn
+                RandomItemToSpawn:int = GetRandomInt(0, ItemSpawnerCount)
+                SelectedItemSpawner := ItemSpawners[RandomItemToSpawn]
+            do:
+                SelectedItemSpawner.SpawnItem()
+            Logger.Print("Spawned Random Items.")
+            DelayBetweenItemSpawns:float = GetRandomFloat(MinimumItemSpawnTime, MaximumItemSpawnTime)
+            # Wait for DelayBetweenItemSpawns seconds
+            Sleep(DelayBetweenItemSpawns)
+    OnGameFinished()<suspends>:void=
+        Logger.Print("Game is finished.")
+        Print("PlayerCounter reset")
+        PlayerCounter.Reset()
+        set GameActive = false
+        # Disable devices used in game.
+        CaptureArea.Disable()
+        for (PlayerSpawner : PlayerSpawners):
+            PlayerSpawner.Disable()
+        for (DamageVolume : DamageVolumes):
+            DamageVolume.Disable()
+        var HighestScore:int = -1
+        var WinningPlayer:?agent = false
+        for:
+            Player : GetPlayspace().GetPlayers()
+            FortCharacter := Player.GetFortCharacter[]
+        do:
+            FortCharacter.PutInStasis(stasis_args{AllowTurning := true, AllowEmotes := true}) # Freeze the player
+            if (ScoreManager.GetCurrentScore(Player) > HighestScore):
+                set HighestScore = ScoreManager.GetCurrentScore(Player)
+                set WinningPlayer = option{Player}
+                
+        if(Winner := WinningPlayer?):
+            PlayerReference.Register(Winner)
+        TeleportPlayersToHUB()
+    TeleportPlayersToHUB()<suspends>:void=
+        Print("Teleport to HUB func") 
+        HUBTeleporter.Enable()
+        GameTeleporter.Disable() # Always disable the other teleporter. 
+        for (HUBSpawner : HUBSpawners):
+            HUBSpawner.Enable()
+        Sleep(DelayAfterGame)
+        EndGameTrigger.Trigger()
+        for:
+            Player : GetPlayspace().GetPlayers()
+            FortCharacter := Player.GetFortCharacter[]
+        do:
+            HUBTeleporter.Teleport(Player)
+            Sleep(0.01) # 
+            FortCharacter.ReleaseFromStasis() # Unfreeze the player
+    TeleportPlayersToGame()<suspends>:void=
+        Print("Teleport to Game func") 
+        GameTeleporter.Enable()
+        HUBTeleporter.Disable() # Always disable the other teleporter.
+        for (PlayerSpawner : PlayerSpawners):
+            PlayerSpawner.Enable()
+        Sleep(0.01)
+        ActivateGameTrigger.Trigger()
+        for:
+            Player : GetPlayspace().GetPlayers()
+            FortCharacter := Player.GetFortCharacter[]
+        do:
+            GameTeleporter.Teleport(Player)
+            Sleep(1.0) 
+
